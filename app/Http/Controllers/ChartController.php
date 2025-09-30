@@ -31,6 +31,8 @@ class ChartController extends Controller
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
             'ai_configuration' => ['required', 'array'],
+            'aiSql' => ['nullable','string'],
+            'aiChart' => ['nullable','array'],
         ]);
 
         $saved = SavedChart::create($data);
@@ -45,8 +47,21 @@ class ChartController extends Controller
     public function rerun(Request $request, int $id)
     {
         $saved = SavedChart::findOrFail($id);
-        $config = $saved->ai_configuration;
+        // If pre-rendered Chart.js JSON is available, reuse it without calling AI
+        if (!empty($saved->aiChart) && is_array($saved->aiChart)) {
+            $aiChart = $saved->aiChart; // expected schema: { type, data, options }
+            $response = [
+                'chart_type' => (string) data_get($aiChart, 'type', data_get($saved->ai_configuration, 'chart_type', 'bar')),
+                'data' => (array) data_get($aiChart, 'data', []),
+                'options' => (array) data_get($aiChart, 'options', []),
+                'config' => $saved->ai_configuration,
+                'aiSql' => $saved->aiSql,
+            ];
+            return response()->json($response);
+        }
 
+        // Otherwise rebuild from stored AI configuration (still no new AI call)
+        $config = $saved->ai_configuration;
         if ($request->filled('start_date') || $request->filled('end_date')) {
             $config['query']['time_filter'] = [
                 'column' => data_get($config, 'query.time_filter.column', 'created_at'),
@@ -55,7 +70,6 @@ class ChartController extends Controller
                 'end_date' => $request->string('end_date')->toString() ?: null,
             ];
         }
-
         $chart = $this->buildChartFromConfig($config);
         return response()->json($chart);
     }

@@ -3,25 +3,26 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Call extends Model
 {
+    use SoftDeletes;
+
     protected $fillable = [
-        'lead_id',
-        'called_at',
-        'direction',
-        'duration',
-        'result',
-        'notes',
+        'numero_chiamato',
+        'data_inizio',
+        'durata',
+        'stato_chiamata',
+        'esito',
+        'utente',
+        'company_id',
     ];
 
     protected $casts = [
-        'called_at' => 'datetime',
+        'data_inizio' => 'datetime',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
+        'deleted_at' => 'datetime',
     ];
-
-    public function lead(): BelongsTo
-    {
-        return $this->belongsTo(Lead::class);
-    }
 }

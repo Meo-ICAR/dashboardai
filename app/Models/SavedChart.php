@@ -10,9 +10,12 @@ class SavedChart extends Model
         'title',
         'description',
         'ai_configuration',
+        'aiSql',
+        'aiChart',
     ];
 
     protected $casts = [
         'ai_configuration' => 'array',
+        'aiChart' => 'array',
     ];
 }
