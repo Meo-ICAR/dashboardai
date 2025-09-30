@@ -4,6 +4,7 @@ namespace App\Services;
 
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class AIService
 {
@@ -28,28 +29,7 @@ class AIService
             if (is_array($decoded)) {
                 return $decoded;
             }
-            // Default: leads created per day over last 30 days
-            return [
-                'chart_type' => 'line',
-                'query' => [
-                    'model' => 'Lead',
-                    'group_by' => 'DATE(created_at)',
-                    'aggregate_function' => 'count',
-                    'aggregate_column' => 'id',
-                    'joins' => [],
-                    'filters' => [],
-                    'time_filter' => [
-                        'column' => 'created_at',
-                        'period' => 'last_30_days',
-                    ],
-                ],
-                'options' => [
-                    'title' => 'Lead Giornalieri (Fallback - Ultimi 30 Giorni)',
-                    'description' => 'Config predefinita usata in assenza di OPENAI_API_KEY o JSON valido.',
-                    'x_axis_label' => 'Data',
-                    'y_axis_label' => 'Numero di Lead',
-                ],
-            ];
+            return $this->defaultConfig();
         }
 
         $system = <<<'PROMPT'
@@ -77,37 +57,75 @@ PROMPT;
 
         if ($driver === 'openai') {
             $baseUrl = (string) config('services.ai.openai.base_url', 'https://api.openai.com/v1');
-            $response = Http::withToken($apiKey)
+            $url = rtrim($baseUrl, '/') . '/chat/completions';
+            $payload = [
+                'model' => $model,
+                'messages' => [
+                    ['role' => 'system', 'content' => $system],
+                    ['role' => 'user', 'content' => $prompt],
+                ],
+                'temperature' => 0.2,
+            ];
+            if (config('app.debug') || env('AI_DEBUG')) {
+                Log::info('[AI debug] OpenAI request', [
+                    'driver' => $driver,
+                    'url' => $url,
+                    'payload' => $payload,
+                ]);
+            }
+            $response = Http::retry(3, 500)->withToken($apiKey)
                 ->acceptJson()
                 ->asJson()
-                ->post(rtrim($baseUrl, '/') . '/chat/completions', [
-                    'model' => $model,
-                    'messages' => [
-                        ['role' => 'system', 'content' => $system],
-                        ['role' => 'user', 'content' => $prompt],
-                    ],
-                    'temperature' => 0.2,
-                ]);
+                ->post($url, $payload);
+            if ($response->status() === 503) {
+                Log::warning('[AI warn] OpenAI 503 Service Unavailable – using fallback');
+                return $this->defaultConfig();
+            }
             if (!$response->ok()) {
                 throw new \RuntimeException('AI request failed: ' . $response->status() . ' ' . $response->body());
+            }
+            if (config('app.debug') || env('AI_DEBUG')) {
+                Log::info('[AI debug] OpenAI response', [
+                    'status' => $response->status(),
+                    'body' => $response->json(),
+                ]);
             }
             $content = (string) data_get($response->json(), 'choices.0.message.content', '');
         } elseif ($driver === 'gemini') {
             $baseUrl = (string) config('services.ai.gemini.base_url', 'https://generativelanguage.googleapis.com/v1beta');
-            $response = Http::acceptJson()
-                ->asJson()
-                ->post(rtrim($baseUrl, '/') . "/models/{$model}:generateContent?key={$apiKey}", [
-                    'contents' => [
-                        [
-                            'parts' => [
-                                ['text' => $system],
-                                ['text' => $prompt],
-                            ],
+            $url = rtrim($baseUrl, '/') . "/models/{$model}:generateContent?key={$apiKey}";
+            $payload = [
+                'contents' => [
+                    [
+                        'parts' => [
+                            ['text' => $system],
+                            ['text' => $prompt],
                         ],
                     ],
+                ],
+            ];
+            if (config('app.debug') || env('AI_DEBUG')) {
+                Log::info('[AI debug] Gemini request', [
+                    'driver' => $driver,
+                    'url' => $url,
+                    'payload' => $payload,
                 ]);
+            }
+            $response = Http::retry(3, 500)->acceptJson()
+                ->asJson()
+                ->post($url, $payload);
+            if ($response->status() === 503) {
+                Log::warning('[AI warn] Gemini 503 Service Unavailable – using fallback');
+                return $this->defaultConfig();
+            }
             if (!$response->ok()) {
                 throw new \RuntimeException('AI request failed: ' . $response->status() . ' ' . $response->body());
+            }
+            if (config('app.debug') || env('AI_DEBUG')) {
+                Log::info('[AI debug] Gemini response', [
+                    'status' => $response->status(),
+                    'body' => $response->json(),
+                ]);
             }
             // Gemini response content path
             $content = (string) data_get($response->json(), 'candidates.0.content.parts.0.text', '');
@@ -119,5 +137,30 @@ PROMPT;
             throw new \RuntimeException('AI response was not valid JSON.');
         }
         return $decoded;
+    }
+
+    private function defaultConfig(): array
+    {
+        return [
+            'chart_type' => 'line',
+            'query' => [
+                'model' => 'Lead',
+                'group_by' => 'DATE(created_at)',
+                'aggregate_function' => 'count',
+                'aggregate_column' => 'id',
+                'joins' => [],
+                'filters' => [],
+                'time_filter' => [
+                    'column' => 'created_at',
+                    'period' => 'last_30_days',
+                ],
+            ],
+            'options' => [
+                'title' => 'Lead Giornalieri (Fallback - Ultimi 30 Giorni)',
+                'description' => 'Config predefinita usata in assenza di provider o in caso di errore temporaneo (503).',
+                'x_axis_label' => 'Data',
+                'y_axis_label' => 'Numero di Lead',
+            ],
+        ];
     }
 }
